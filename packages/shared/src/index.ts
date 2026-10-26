@@ -14,9 +14,15 @@ export interface Spend {
 
 export type Verdict = "allow" | "review" | "deny_limit" | "deny_recipient" | "deny_revoked";
 
+/**
+ * Lifecycle of the USDC transfer for a payable decision:
+ * approved → submitted (tx broadcast, hash known) → confirmed | failed
+ */
+export type PaymentStatus = "approved" | "submitted" | "confirmed" | "failed";
+
 export interface AuthorizeRequest {
   agentId: string;
-  /** USDC amount in base units (6 decimals), as a decimal string. */
+  /** Human-readable USDC amount, e.g. "1.50" (at most 6 decimal places). */
   amount: string;
   recipient: Address;
 }
@@ -33,6 +39,11 @@ export interface Decision {
   createdAt: string;
   /** Set when a held `review` decision is approved. */
   approvedAt: string | null;
+  /** null while the decision isn't payable (denied, or a review still pending). */
+  paymentStatus: PaymentStatus | null;
+  txHash: Hash | null;
+  /** Why the payment failed, when `paymentStatus` is "failed". */
+  paymentError: string | null;
 }
 
 export interface AgentInfo {
