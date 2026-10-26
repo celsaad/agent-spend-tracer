@@ -9,13 +9,15 @@
     "typecheck": "tsc -p .",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "db:seed": "tsx src/seed.ts"
+    "db:seed": "tsx src/seed.ts",
+    "verdict:vectors": "tsx src/verdict/vectors-report.ts"
   },
   "dependencies": {
     "@agent-spend-tracer/shared": "workspace:*",
     "@libsql/client": "^0.18.0",
     "drizzle-orm": "^0.45.4",
     "fastify": "^5.12.7",
+    "jose": "^6.2.13",
     "viem": "^2.57.11"
   },
   "devDependencies": {
