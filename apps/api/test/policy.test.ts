@@ -3,12 +3,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { parseUnits } from "viem";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { parseUnits, type Address, type Hash } from "viem";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Decision } from "@agent-spend-tracer/shared";
 import { buildApp } from "../src/app.js";
 import { createDb, type Db } from "../src/db/client.js";
 import { agents, decisions, mandates } from "../src/db/schema.js";
+import { resumeConfirmations } from "../src/payments.js";
 import * as policy from "../src/policy.js";
 
 const usdc = (n: number) => Number(parseUnits(String(n), 6));
@@ -27,10 +28,44 @@ const MANDATE = {
   allowedRecipients: [ALLOWED],
 } as const;
 
+const AGENT_WALLET = "0x3333333333333333333333333333333333333333";
+
+/**
+ * Stands in for the viem sender in chain.ts. Records transfers, hands out fake hashes, and keeps
+ * each receipt pending until the test settles it.
+ */
+function fakeSender() {
+  let count = 0;
+  const receipts = new Map<Hash, { resolve: (s: "success" | "reverted") => void; reject: (e: Error) => void }>();
+  const sender = {
+    address: AGENT_WALLET as Address,
+    sent: [] as { to: Address; amount: bigint }[],
+    /** Makes the next send() throw, like a failed simulation. */
+    failNextSend: undefined as Error | undefined,
+    async send(transfer: { to: Address; amount: bigint }): Promise<Hash> {
+      sender.sent.push(transfer);
+      const err = sender.failNextSend;
+      sender.failNextSend = undefined;
+      if (err) throw err;
+      return `0x${(++count).toString(16).padStart(64, "0")}`;
+    },
+    waitForReceipt(hash: Hash) {
+      return new Promise<"success" | "reverted">((resolve, reject) => receipts.set(hash, { resolve, reject }));
+    },
+    settle(hash: Hash, outcome: "success" | "reverted" | Error) {
+      const receipt = receipts.get(hash)!;
+      if (outcome instanceof Error) receipt.reject(outcome);
+      else receipt.resolve(outcome);
+    },
+  };
+  return sender;
+}
+
 // libsql on Windows keeps database files locked after close(), so test databases share one
 // directory that is removed best-effort at the end instead of after each test.
 const dir = mkdtempSync(join(tmpdir(), "agent-spend-tracer-"));
 let db: Db;
+let sender: ReturnType<typeof fakeSender>;
 let app: ReturnType<typeof buildApp>;
 let agentId: string;
 let mandateId: string;
@@ -39,11 +74,12 @@ beforeEach(async () => {
   // A file, not :memory: — libsql gives each transaction its own connection, and an
   // in-memory database exists only on one connection.
   db = await createDb(join(dir, `${randomUUID()}.db`));
-  app = buildApp(db, { logger: false, now: () => NOW });
+  sender = fakeSender();
+  app = buildApp(db, { sender, logger: false, now: () => NOW });
 
   [{ id: agentId }] = await db
     .insert(agents)
-    .values({ name: "test agent", walletAddress: "0x3333333333333333333333333333333333333333" })
+    .values({ name: "test agent", walletAddress: AGENT_WALLET })
     .returning();
   [{ id: mandateId }] = await db
     .insert(mandates)
@@ -64,16 +100,20 @@ afterAll(() => {
   }
 });
 
-function authorize(amountUsdc: number, recipient: string = ALLOWED) {
+function authorize(amountUsdc: number | string, recipient: string = ALLOWED) {
   return app.inject({
     method: "POST",
     url: "/api/authorize",
-    payload: { agentId, amount: String(usdc(amountUsdc)), recipient },
+    payload: { agentId, amount: String(amountUsdc), recipient },
   });
 }
 
 function approve(id: string) {
   return app.inject({ method: "POST", url: `/api/decisions/${id}/approve` });
+}
+
+async function getDecision(id: string) {
+  return (await app.inject({ method: "GET", url: `/api/decisions/${id}` })).json<Decision>();
 }
 
 /** Seeds a past decision directly, bypassing the policy. */
@@ -202,14 +242,110 @@ describe("POST /api/authorize", () => {
   });
 
   it.each([
-    ["zero amount", { amount: "0", recipient: ALLOWED }],
-    ["decimal amount", { amount: "1.5", recipient: ALLOWED }],
+    ["zero amount", { amount: "0.000000", recipient: ALLOWED }],
+    ["more than 6 decimals", { amount: "1.0000001", recipient: ALLOWED }],
+    ["negative amount", { amount: "-1", recipient: ALLOWED }],
+    ["exponent notation", { amount: "1e3", recipient: ALLOWED }],
     ["numeric amount", { amount: 5, recipient: ALLOWED }],
     ["bad address", { amount: "1", recipient: "0x123" }],
-    ["unsafe integer", { amount: "9007199254740993", recipient: ALLOWED }],
+    ["amount beyond safe integer base units", { amount: "9007199254.740993", recipient: ALLOWED }],
   ])("rejects %s with 400", async (_, body) => {
     const res = await app.inject({ method: "POST", url: "/api/authorize", payload: { agentId, ...body } });
     expect(res.statusCode).toBe(400);
+    expect(sender.sent).toHaveLength(0);
+  });
+
+  it("converts decimal amounts to exact base units", async () => {
+    // 1.005 * 1e6 in floating point is 1004999.9999999999
+    const res = await authorize("1.005");
+    expect(res.json<Decision>().amount).toBe("1005000");
+    expect(sender.sent).toEqual([{ to: ALLOWED, amount: 1_005_000n }]);
+  });
+});
+
+describe("payments", () => {
+  it("submits an allowed payment, stores the hash, and confirms it once mined", async () => {
+    const decision = (await authorize("12.5")).json<Decision>();
+
+    expect(decision).toMatchObject({ verdict: "allow", paymentStatus: "submitted", paymentError: null });
+    expect(decision.txHash).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(sender.sent).toEqual([{ to: ALLOWED, amount: 12_500_000n }]);
+
+    sender.settle(decision.txHash!, "success");
+    await vi.waitFor(async () => expect((await getDecision(decision.id)).paymentStatus).toBe("confirmed"));
+  });
+
+  it("marks a payment failed when it reverts onchain, and stops counting it toward the limit", async () => {
+    await seedDecision(200, daysAgo(1)); // 50 left
+    const decision = (await authorize(50)).json<Decision>();
+    expect(decision.paymentStatus).toBe("submitted");
+    expect((await authorize(1)).json<Decision>().verdict).toBe("deny_limit");
+
+    sender.settle(decision.txHash!, "reverted");
+    await vi.waitFor(async () =>
+      expect(await getDecision(decision.id)).toMatchObject({
+        paymentStatus: "failed",
+        paymentError: "Transaction reverted onchain",
+      }),
+    );
+    expect((await authorize(1)).json<Decision>().verdict).toBe("allow");
+  });
+
+  it("marks a payment failed when the transfer can't be sent, without a hash", async () => {
+    sender.failNextSend = new Error("transfer amount exceeds balance");
+
+    const decision = (await authorize(10)).json<Decision>();
+    expect(decision).toMatchObject({
+      verdict: "allow",
+      paymentStatus: "failed",
+      txHash: null,
+      paymentError: "transfer amount exceeds balance",
+    });
+  });
+
+  it("leaves a payment submitted when the receipt can't be fetched, so it can be resumed", async () => {
+    const decision = (await authorize(10)).json<Decision>();
+    sender.settle(decision.txHash!, new Error("timed out"));
+
+    // give the background confirmation a chance to (wrongly) write
+    await new Promise((r) => setTimeout(r, 50));
+    expect((await getDecision(decision.id)).paymentStatus).toBe("submitted");
+
+    await resumeConfirmations(db, sender, app.log);
+    sender.settle(decision.txHash!, "success");
+    await vi.waitFor(async () => expect((await getDecision(decision.id)).paymentStatus).toBe("confirmed"));
+  });
+
+  it("does not pay a review until it is approved", async () => {
+    const review = (await authorize(80)).json<Decision>();
+    expect(review).toMatchObject({ verdict: "review", paymentStatus: null, txHash: null });
+    expect(sender.sent).toHaveLength(0);
+
+    const approved = (await approve(review.id)).json<Decision>();
+    expect(approved.paymentStatus).toBe("submitted");
+    expect(sender.sent).toEqual([{ to: ALLOWED, amount: 80_000_000n }]);
+  });
+
+  it("does not pay denied decisions", async () => {
+    const denied = (await authorize(10, STRANGER)).json<Decision>();
+    expect(denied).toMatchObject({ verdict: "deny_recipient", paymentStatus: null });
+    expect(sender.sent).toHaveLength(0);
+  });
+
+  it("refuses to pay when the agent's wallet isn't the configured sender", async () => {
+    await db.update(agents).set({ walletAddress: STRANGER }).where(eq(agents.id, agentId));
+
+    const decision = (await authorize(10)).json<Decision>();
+    expect(decision.paymentStatus).toBe("failed");
+    expect(decision.paymentError).toContain("is not the configured sender");
+    expect(sender.sent).toHaveLength(0);
+  });
+
+  it("lists decisions newest first", async () => {
+    await seedDecision(1, daysAgo(2));
+    const latest = (await authorize(2)).json<Decision>();
+    const list = (await app.inject({ method: "GET", url: "/api/decisions" })).json<Decision[]>();
+    expect(list.map((d) => d.amount)).toEqual([latest.amount, String(usdc(1))]);
   });
 });
 

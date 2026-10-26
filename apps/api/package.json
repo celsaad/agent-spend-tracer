@@ -8,7 +8,8 @@
     "start": "tsx src/index.ts",
     "typecheck": "tsc -p .",
     "test": "vitest run",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "db:seed": "tsx src/seed.ts"
   },
   "dependencies": {
     "@agent-spend-tracer/shared": "workspace:*",
