@@ -32,8 +32,9 @@ function updateDecision(db: Db, id: string, fields: Partial<DecisionRow>): Promi
 
 /**
  * Pays an approved decision: approved → submitted, or approved → failed if the transfer can't be
- * sent. Resolves as soon as the transaction is broadcast; confirmation continues in the
- * background (submitted → confirmed | failed), since a block can take several seconds.
+ * sent. Resolves as soon as the transaction is broadcast. From there the indexer marks it
+ * confirmed once its Transfer event is enough blocks deep, and confirmPayment marks it failed if
+ * it reverts.
  *
  * "failed" means no USDC moved, so failed payments stop counting toward the rolling limit. That
  * holds for a failed simulation, an RPC that rejects the transaction, and an onchain revert. The
@@ -63,18 +64,18 @@ export async function submitPayment(db: Db, sender: PaymentSender, decision: Dec
   return submitted;
 }
 
-/** Waits for the receipt of a submitted payment and records the outcome. */
+/**
+ * Waits for the receipt of a submitted payment to catch reverts. A reverted transaction emits no
+ * Transfer event, so the indexer would never see it. A successful one stays "submitted" here: the
+ * indexer confirms it once it is enough blocks deep, which also protects against reorgs.
+ */
 export async function confirmPayment(db: Db, sender: PaymentSender, decision: DecisionRow, log: Log) {
   const hash = decision.txHash!;
   try {
     const status = await sender.waitForReceipt(hash);
-    await updateDecision(
-      db,
-      decision.id,
-      status === "success"
-        ? { paymentStatus: "confirmed" }
-        : { paymentStatus: "failed", paymentError: "Transaction reverted onchain" },
-    );
+    if (status === "reverted") {
+      await updateDecision(db, decision.id, { paymentStatus: "failed", paymentError: "Transaction reverted onchain" });
+    }
     log.info({ decisionId: decision.id, txHash: hash, status }, "payment mined");
   } catch (err) {
     // A timeout or RPC error says nothing about the transaction itself; it may still be mined.
