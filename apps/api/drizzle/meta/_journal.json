@@ -8,6 +8,13 @@
       "when": 1793016124205,
       "tag": "0000_dry_vision",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1793016637692,
+      "tag": "0001_wild_sprite",
+      "breakpoints": true
     }
   ]
 }
