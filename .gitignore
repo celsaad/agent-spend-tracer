@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# env — never commit secrets
+.env
+.env.*
+!.env.example
+
+# local SQLite database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

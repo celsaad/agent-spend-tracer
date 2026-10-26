@@ -1,0 +1,7 @@
+packages:
+  - apps/*
+  - packages/*
+allowBuilds:
+  esbuild: true
+  # optional drizzle-orm peer that pnpm auto-installs; unused (we use @libsql/client)
+  better-sqlite3: false
