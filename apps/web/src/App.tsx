@@ -1,47 +1,45 @@
-import { useQuery } from "@tanstack/react-query";
-import { formatUnits } from "viem";
-import type { AgentInfo, Spend } from "@agent-spend-tracer/shared";
+import { useAgentInfo, useDecisions } from "./api";
+import { ChainLink, LiveIndicator } from "./components";
+import { DecisionDetail } from "./DecisionDetail";
+import { usdc } from "./format";
+import { Overview } from "./Overview";
+import { useRoute } from "./router";
+import { UnauthorizedAlerts } from "./UnauthorizedAlerts";
 
-async function fetchJson<T>(path: string): Promise<T> {
-  const res = await fetch(path);
-  if (!res.ok) throw new Error(`${path}: ${res.status}`);
-  return res.json();
+function Header() {
+  const agent = useAgentInfo();
+  const decisions = useDecisions();
+  return (
+    <header className="topbar">
+      <div className="topbar-inner">
+        <a className="brand" href="#/">
+          Agent Spend Console
+        </a>
+        <span className="network">Base Sepolia</span>
+        <div className="wallet">
+          {agent.data && (
+            <>
+              <span className="muted">Agent wallet</span>
+              <ChainLink kind="address" value={agent.data.address} />
+              <span className="wallet-balance num">{usdc(agent.data.usdcBalance)} USDC</span>
+            </>
+          )}
+        </div>
+        <LiveIndicator updatedAt={decisions.dataUpdatedAt} error={decisions.isError} />
+      </div>
+    </header>
+  );
 }
 
-const usdc = (amount: string) => formatUnits(BigInt(amount), 6);
-
 export function App() {
-  const agent = useQuery({ queryKey: ["agent"], queryFn: () => fetchJson<AgentInfo>("/api/agent") });
-  const spends = useQuery({ queryKey: ["spends"], queryFn: () => fetchJson<Spend[]>("/api/spends") });
-
+  const route = useRoute();
   return (
-    <main style={{ fontFamily: "system-ui", maxWidth: 720, margin: "2rem auto", padding: "0 1rem" }}>
-      <h1>Agent Spend Tracer</h1>
-
-      <section>
-        <h2>Agent</h2>
-        {agent.isPending && <p>Loading…</p>}
-        {agent.error && <p>Error: {agent.error.message}</p>}
-        {agent.data && (
-          <p>
-            <code>{agent.data.address}</code> — {usdc(agent.data.usdcBalance)} USDC
-          </p>
-        )}
-      </section>
-
-      <section>
-        <h2>Spends</h2>
-        {spends.isPending && <p>Loading…</p>}
-        {spends.error && <p>Error: {spends.error.message}</p>}
-        {spends.data?.length === 0 && <p>No spends yet.</p>}
-        <ul>
-          {spends.data?.map((s) => (
-            <li key={s.id}>
-              {usdc(s.amount)} USDC → <code>{s.to}</code> {s.memo && `(${s.memo})`}
-            </li>
-          ))}
-        </ul>
-      </section>
-    </main>
+    <>
+      <Header />
+      <main className="page">
+        <UnauthorizedAlerts />
+        {route.page === "decision" ? <DecisionDetail id={route.id} /> : <Overview />}
+      </main>
+    </>
   );
 }

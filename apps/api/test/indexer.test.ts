@@ -143,7 +143,11 @@ describe("indexer", () => {
 
     // 3 confirmations at head 103
     await indexer.sync(103n);
-    expect((await getTransfers())[0]).toMatchObject({ status: "confirmed", authorization: "authorized" });
+    expect((await getTransfers())[0]).toMatchObject({
+      status: "confirmed",
+      authorization: "authorized",
+      confirmedAt: expect.any(String),
+    });
     expect((await getDecision(decision.id)).paymentStatus).toBe("confirmed");
   });
 

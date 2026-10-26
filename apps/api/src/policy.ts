@@ -99,12 +99,7 @@ export function authorize(
  */
 export function approve(db: Db, decisionId: string, now: Date): Promise<DecisionRow> {
   return writeTransaction(db, async (tx) => {
-    const [decision] = await tx.select().from(decisions).where(eq(decisions.id, decisionId));
-    if (!decision) throw new PolicyError(404, "not_found", `No decision ${decisionId}`);
-    if (decision.verdict !== "review" || decision.approvedAt) {
-      throw new PolicyError(409, "not_pending_review", "Decision is not awaiting review");
-    }
-
+    const decision = await pendingReview(tx, decisionId);
     const [mandate] = await tx.select().from(mandates).where(eq(mandates.id, decision.mandateId));
     const verdict = evaluate(mandate!, decision, await spentLast30d(tx, decision.agentId, now));
     if (verdict !== "allow" && verdict !== "review") {
@@ -118,4 +113,26 @@ export function approve(db: Db, decisionId: string, now: Date): Promise<Decision
       .returning();
     return approved!;
   });
+}
+
+/** Rejects a held review. Nothing is paid, and it never counts toward the rolling limit. */
+export function deny(db: Db, decisionId: string, now: Date): Promise<DecisionRow> {
+  return writeTransaction(db, async (tx) => {
+    await pendingReview(tx, decisionId);
+    const [denied] = await tx
+      .update(decisions)
+      .set({ deniedAt: now.toISOString() })
+      .where(eq(decisions.id, decisionId))
+      .returning();
+    return denied!;
+  });
+}
+
+async function pendingReview(tx: Tx, decisionId: string): Promise<DecisionRow> {
+  const [decision] = await tx.select().from(decisions).where(eq(decisions.id, decisionId));
+  if (!decision) throw new PolicyError(404, "not_found", `No decision ${decisionId}`);
+  if (decision.verdict !== "review" || decision.approvedAt || decision.deniedAt) {
+    throw new PolicyError(409, "not_pending_review", "Decision is not awaiting review");
+  }
+  return decision;
 }

@@ -142,6 +142,7 @@ export function createIndexer(db: Db, source: TransferSource, opts: IndexerOptio
           status: "confirmed" as const,
           authorization: authorized ? ("authorized" as const) : ("unauthorized" as const),
           decisionId,
+          confirmedAt: new Date().toISOString(),
         };
         await tx
           .insert(transfers)
@@ -154,6 +155,7 @@ export function createIndexer(db: Db, source: TransferSource, opts: IndexerOptio
               status: row.status,
               authorization: row.authorization,
               decisionId,
+              confirmedAt: row.confirmedAt,
             },
           });
         if (authorized) {
