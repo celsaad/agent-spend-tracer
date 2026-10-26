@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
-import type { Address, Verdict } from "@agent-spend-tracer/shared";
+import type { Address, Hash, PaymentStatus, Verdict } from "@agent-spend-tracer/shared";
 
 export const spends = sqliteTable("spends", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -59,6 +59,10 @@ export const decisions = sqliteTable(
     verdict: text("verdict").$type<Verdict>().notNull(),
     createdAt: text("created_at").notNull(),
     approvedAt: text("approved_at"),
+    // null until the decision is payable (allowed, or a review that was approved)
+    paymentStatus: text("payment_status").$type<PaymentStatus>(),
+    txHash: text("tx_hash").$type<Hash>(),
+    paymentError: text("payment_error"),
   },
   (t) => [index("decisions_agent_created_idx").on(t.agentId, t.createdAt)],
 );

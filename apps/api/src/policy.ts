@@ -1,6 +1,6 @@
-import { and, desc, eq, gt, isNotNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { Address, Verdict } from "@agent-spend-tracer/shared";
-import type { Db, Tx } from "./db/client.js";
+import { writeTransaction, type Db, type Tx } from "./db/client.js";
 import { decisions, mandates, type DecisionRow, type Mandate } from "./db/schema.js";
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -39,7 +39,8 @@ export function evaluate(mandate: Mandate, req: SpendRequest, spentLast30d: numb
 /**
  * Total committed spend for the agent in the 30 days before `now`, across all of its mandates
  * (so replacing a mandate doesn't reset the window). Allowed decisions count from creation,
- * approved reviews from approval. Pending reviews don't count until approved.
+ * approved reviews from approval. Pending reviews don't count until approved, and failed
+ * payments don't count because no USDC moved (see payments.ts for when "failed" is set).
  */
 async function spentLast30d(tx: Tx, agentId: string, now: Date): Promise<number> {
   const since = new Date(now.getTime() - THIRTY_DAYS_MS).toISOString();
@@ -50,27 +51,15 @@ async function spentLast30d(tx: Tx, agentId: string, now: Date): Promise<number>
       and(
         eq(decisions.agentId, agentId),
         or(eq(decisions.verdict, "allow"), isNotNull(decisions.approvedAt)),
+        or(isNull(decisions.paymentStatus), ne(decisions.paymentStatus, "failed")),
         gt(sql`coalesce(${decisions.approvedAt}, ${decisions.createdAt})`, since),
       ),
     );
   return Number(row!.total);
 }
 
-// The rolling-limit check reads the window and then writes a decision, so two requests must not
-// interleave between those steps. Each transaction holds a write lock (libsql opens it with
-// BEGIN IMMEDIATE), but libsql runs every transaction on its own pooled connection and the driver
-// is synchronous, so a second overlapping transaction can't wait for the first and fails with
-// SQLITE_BUSY instead. Queueing write transactions per database turns that into waiting.
-const writeQueues = new WeakMap<Db, Promise<unknown>>();
-
-function writeTransaction<T>(db: Db, fn: (tx: Tx) => Promise<T>): Promise<T> {
-  const run = (writeQueues.get(db) ?? Promise.resolve()).then(() => db.transaction(fn));
-  writeQueues.set(
-    db,
-    run.catch(() => {}),
-  );
-  return run;
-}
+// The rolling-limit check reads the window and then writes a decision, so authorize and approve
+// each run in one write transaction and two requests can't interleave between those steps.
 
 export function authorize(
   db: Db,
@@ -96,6 +85,7 @@ export function authorize(
         recipient: req.recipient,
         verdict,
         createdAt: now.toISOString(),
+        paymentStatus: verdict === "allow" ? "approved" : null,
       })
       .returning();
     return decision!;
@@ -123,7 +113,7 @@ export function approve(db: Db, decisionId: string, now: Date): Promise<Decision
 
     const [approved] = await tx
       .update(decisions)
-      .set({ approvedAt: now.toISOString() })
+      .set({ approvedAt: now.toISOString(), paymentStatus: "approved" })
       .where(eq(decisions.id, decisionId))
       .returning();
     return approved!;
