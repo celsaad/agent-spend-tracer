@@ -1,10 +1,10 @@
 import Fastify from "fastify";
 import { desc, eq } from "drizzle-orm";
 import { parseUnits } from "viem";
-import type { AuthorizeRequest, Decision, Spend } from "@agent-spend-tracer/shared";
+import type { AuthorizeRequest, Decision, Spend, Transfer } from "@agent-spend-tracer/shared";
 import { USDC_DECIMALS } from "./config.js";
 import type { Db } from "./db/client.js";
-import { decisions, spends, type DecisionRow } from "./db/schema.js";
+import { decisions, spends, transfers, type DecisionRow } from "./db/schema.js";
 import { submitPayment, type PaymentSender } from "./payments.js";
 import { approve, authorize, PolicyError } from "./policy.js";
 
@@ -72,6 +72,10 @@ export function buildApp(db: Db, { sender, logger = true, now = () => new Date()
   app.get("/api/decisions", async (): Promise<Decision[]> => {
     const rows = await db.select().from(decisions).orderBy(desc(decisions.createdAt)).limit(100);
     return rows.map(toDecision);
+  });
+
+  app.get("/api/transfers", async (): Promise<Transfer[]> => {
+    return db.select().from(transfers).orderBy(desc(transfers.blockNumber), desc(transfers.logIndex)).limit(100);
   });
 
   app.get<{ Params: { id: string } }>("/api/decisions/:id", async (req): Promise<Decision> => {

@@ -19,4 +19,10 @@ export const env = {
   agentPrivateKey: required("AGENT_PRIVATE_KEY") as Hex,
   port: Number(process.env.API_PORT ?? 3001),
   databasePath: process.env.DATABASE_PATH ?? "./data.db",
+  /** Blocks a transfer must be buried under (counting its own) before it is marked confirmed. */
+  indexerConfirmations: Number(process.env.INDEXER_CONFIRMATIONS ?? 5),
+  /** First block to index on a fresh database. Defaults to the chain head at first start. */
+  indexerStartBlock: process.env.INDEXER_START_BLOCK ? BigInt(process.env.INDEXER_START_BLOCK) : undefined,
+  /** Blocks per eth_getLogs request. The public Base Sepolia RPC allows at most 200. */
+  indexerChunkSize: process.env.INDEXER_CHUNK_SIZE ? Number(process.env.INDEXER_CHUNK_SIZE) : undefined,
 };

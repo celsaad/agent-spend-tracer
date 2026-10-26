@@ -264,15 +264,17 @@ describe("POST /api/authorize", () => {
 });
 
 describe("payments", () => {
-  it("submits an allowed payment, stores the hash, and confirms it once mined", async () => {
+  it("submits an allowed payment and stores the hash, leaving confirmation to the indexer", async () => {
     const decision = (await authorize("12.5")).json<Decision>();
 
     expect(decision).toMatchObject({ verdict: "allow", paymentStatus: "submitted", paymentError: null });
     expect(decision.txHash).toMatch(/^0x[0-9a-f]{64}$/);
     expect(sender.sent).toEqual([{ to: ALLOWED, amount: 12_500_000n }]);
 
+    // a successful receipt is only one block deep; the indexer confirms it later (indexer.test.ts)
     sender.settle(decision.txHash!, "success");
-    await vi.waitFor(async () => expect((await getDecision(decision.id)).paymentStatus).toBe("confirmed"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect((await getDecision(decision.id)).paymentStatus).toBe("submitted");
   });
 
   it("marks a payment failed when it reverts onchain, and stops counting it toward the limit", async () => {
@@ -303,7 +305,7 @@ describe("payments", () => {
     });
   });
 
-  it("leaves a payment submitted when the receipt can't be fetched, so it can be resumed", async () => {
+  it("keeps watching for a revert after a restart when the receipt couldn't be fetched", async () => {
     const decision = (await authorize(10)).json<Decision>();
     sender.settle(decision.txHash!, new Error("timed out"));
 
@@ -312,8 +314,8 @@ describe("payments", () => {
     expect((await getDecision(decision.id)).paymentStatus).toBe("submitted");
 
     await resumeConfirmations(db, sender, app.log);
-    sender.settle(decision.txHash!, "success");
-    await vi.waitFor(async () => expect((await getDecision(decision.id)).paymentStatus).toBe("confirmed"));
+    sender.settle(decision.txHash!, "reverted");
+    await vi.waitFor(async () => expect((await getDecision(decision.id)).paymentStatus).toBe("failed"));
   });
 
   it("does not pay a review until it is approved", async () => {

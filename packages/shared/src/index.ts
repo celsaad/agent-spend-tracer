@@ -46,6 +46,30 @@ export interface Decision {
   paymentError: string | null;
 }
 
+/** pending: seen in a block that isn't deep enough yet. confirmed: N blocks deep and re-verified. */
+export type TransferStatus = "pending" | "confirmed";
+
+/** authorized: matches an approved decision by tx hash, amount and recipient. */
+export type TransferAuthorization = "authorized" | "unauthorized";
+
+/** A USDC Transfer event from the agent wallet, as observed onchain. */
+export interface Transfer {
+  id: string;
+  txHash: Hash;
+  logIndex: number;
+  blockNumber: number;
+  blockHash: Hash;
+  from: Address;
+  to: Address;
+  /** USDC amount in base units (6 decimals), as a decimal string. */
+  amount: string;
+  status: TransferStatus;
+  /** null until the transfer is confirmed. */
+  authorization: TransferAuthorization | null;
+  decisionId: string | null;
+  seenAt: string;
+}
+
 export interface AgentInfo {
   address: Address;
   chainId: number;
