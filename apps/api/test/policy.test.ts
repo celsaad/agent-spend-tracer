@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import type { Decision } from "@agent-spend-tracer/shared";
 import { buildApp } from "../src/app.js";
 import { createDb, type Db } from "../src/db/client.js";
-import { agents, decisions, mandates } from "../src/db/schema.js";
+import { agents, decisions, mandates, transfers } from "../src/db/schema.js";
 import { resumeConfirmations } from "../src/payments.js";
 import * as policy from "../src/policy.js";
 
@@ -270,6 +270,7 @@ describe("payments", () => {
     expect(decision).toMatchObject({ verdict: "allow", paymentStatus: "submitted", paymentError: null });
     expect(decision.txHash).toMatch(/^0x[0-9a-f]{64}$/);
     expect(sender.sent).toEqual([{ to: ALLOWED, amount: 12_500_000n }]);
+    expect(decision.submittedAt).toEqual(expect.any(String));
 
     // a successful receipt is only one block deep; the indexer confirms it later (indexer.test.ts)
     sender.settle(decision.txHash!, "success");
@@ -420,5 +421,70 @@ describe("POST /api/decisions/:id/approve", () => {
 
   it("returns 404 for an unknown decision", async () => {
     expect((await approve("nope")).statusCode).toBe(404);
+  });
+});
+
+describe("POST /api/decisions/:id/deny", () => {
+  const deny = (id: string) => app.inject({ method: "POST", url: `/api/decisions/${id}/deny` });
+
+  it("rejects a held review without paying, after which it can't be approved", async () => {
+    const review = (await authorize(80)).json<Decision>();
+
+    const res = await deny(review.id);
+    expect(res.statusCode).toBe(200);
+    expect(res.json<Decision>()).toMatchObject({ verdict: "review", deniedAt: NOW.toISOString(), paymentStatus: null });
+    expect(sender.sent).toHaveLength(0);
+
+    expect((await approve(review.id)).json()).toMatchObject({ code: "not_pending_review" });
+    expect((await deny(review.id)).json()).toMatchObject({ code: "not_pending_review" });
+  });
+
+  it("rejects denying a decision that is not a pending review", async () => {
+    const allowed = (await authorize(10)).json<Decision>();
+    expect((await deny(allowed.id)).statusCode).toBe(409);
+    expect((await deny("nope")).statusCode).toBe(404);
+  });
+
+  it("never counts a denied review toward the rolling limit", async () => {
+    await seedDecision(150, daysAgo(1)); // 100 left
+    const review = (await authorize(60)).json<Decision>();
+    await deny(review.id);
+
+    // the full 100 is still available
+    expect((await authorize(50)).json<Decision>().verdict).toBe("allow");
+    expect((await authorize(50)).json<Decision>().verdict).toBe("allow");
+  });
+});
+
+describe("console queries", () => {
+  it("lists only pending reviews, oldest first, with ?pendingReview=true", async () => {
+    const first = (await authorize(60)).json<Decision>();
+    const second = (await authorize(70)).json<Decision>();
+    const denied = (await authorize(80)).json<Decision>();
+    await app.inject({ method: "POST", url: `/api/decisions/${denied.id}/deny` });
+    await authorize(10); // allowed
+
+    const queue = (await app.inject({ method: "GET", url: "/api/decisions?pendingReview=true" })).json<Decision[]>();
+    expect(queue.map((d) => d.id)).toEqual([first.id, second.id]);
+  });
+
+  it("filters transfers by decision and by authorization", async () => {
+    const paid = (await authorize(10)).json<Decision>();
+    const base = { logIndex: 0, blockHash: paid.txHash!, from: AGENT_WALLET, to: ALLOWED, amount: "1", seenAt: NOW.toISOString() } as const;
+    await db.insert(transfers).values([
+      { ...base, id: "a", txHash: paid.txHash!, blockNumber: 1, status: "confirmed", authorization: "authorized", decisionId: paid.id },
+      { ...base, id: "b", txHash: paid.txHash!, blockNumber: 2, status: "confirmed", authorization: "unauthorized", decisionId: null },
+    ]);
+    const get = async (qs: string) =>
+      (await app.inject({ method: "GET", url: `/api/transfers${qs}` })).json<{ id: string }[]>().map((t) => t.id);
+
+    expect(await get("")).toEqual(["b", "a"]);
+    expect(await get(`?decisionId=${paid.id}`)).toEqual(["a"]);
+    expect(await get("?authorization=unauthorized")).toEqual(["b"]);
+  });
+
+  it("lists agents", async () => {
+    const list = (await app.inject({ method: "GET", url: "/api/agents" })).json();
+    expect(list).toEqual([{ id: agentId, name: "test agent", walletAddress: AGENT_WALLET }]);
   });
 });

@@ -1,17 +1,6 @@
 export type Address = `0x${string}`;
 export type Hash = `0x${string}`;
 
-/** A single USDC payment made by the agent. */
-export interface Spend {
-  id: number;
-  txHash: Hash;
-  to: Address;
-  /** USDC amount in base units (6 decimals), as a decimal string to avoid precision loss. */
-  amount: string;
-  memo: string | null;
-  createdAt: string;
-}
-
 export type Verdict = "allow" | "review" | "deny_limit" | "deny_recipient" | "deny_revoked";
 
 /**
@@ -39,9 +28,13 @@ export interface Decision {
   createdAt: string;
   /** Set when a held `review` decision is approved. */
   approvedAt: string | null;
+  /** Set when a reviewer rejects a held `review` decision. */
+  deniedAt: string | null;
   /** null while the decision isn't payable (denied, or a review still pending). */
   paymentStatus: PaymentStatus | null;
   txHash: Hash | null;
+  /** When the transfer was broadcast. */
+  submittedAt: string | null;
   /** Why the payment failed, when `paymentStatus` is "failed". */
   paymentError: string | null;
 }
@@ -68,6 +61,13 @@ export interface Transfer {
   authorization: TransferAuthorization | null;
   decisionId: string | null;
   seenAt: string;
+  confirmedAt: string | null;
+}
+
+export interface Agent {
+  id: string;
+  name: string;
+  walletAddress: Address;
 }
 
 export interface AgentInfo {

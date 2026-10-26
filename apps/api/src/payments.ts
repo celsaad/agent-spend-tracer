@@ -58,7 +58,11 @@ export async function submitPayment(db: Db, sender: PaymentSender, decision: Dec
     return updateDecision(db, decision.id, { paymentStatus: "failed", paymentError: errorMessage(err) });
   }
 
-  const submitted = await updateDecision(db, decision.id, { paymentStatus: "submitted", txHash: hash });
+  const submitted = await updateDecision(db, decision.id, {
+    paymentStatus: "submitted",
+    txHash: hash,
+    submittedAt: new Date().toISOString(),
+  });
   log.info({ decisionId: decision.id, txHash: hash }, "payment submitted");
   void confirmPayment(db, sender, submitted, log);
   return submitted;

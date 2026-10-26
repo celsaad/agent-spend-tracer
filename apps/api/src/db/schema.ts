@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { sql } from "drizzle-orm";
 import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import type {
   Address,
@@ -9,17 +8,6 @@ import type {
   TransferStatus,
   Verdict,
 } from "@agent-spend-tracer/shared";
-
-export const spends = sqliteTable("spends", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  txHash: text("tx_hash").notNull().unique(),
-  to: text("to").notNull(),
-  amount: text("amount").notNull(),
-  memo: text("memo"),
-  createdAt: text("created_at")
-    .notNull()
-    .default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`),
-});
 
 // Amounts and limits are USDC base units (6 decimals). SQLite integers are 64-bit,
 // and the API rejects anything above Number.MAX_SAFE_INTEGER (~9 billion USDC).
@@ -66,9 +54,12 @@ export const decisions = sqliteTable(
     verdict: text("verdict").$type<Verdict>().notNull(),
     createdAt: text("created_at").notNull(),
     approvedAt: text("approved_at"),
+    /** Set when a reviewer rejects a held review. */
+    deniedAt: text("denied_at"),
     // null until the decision is payable (allowed, or a review that was approved)
     paymentStatus: text("payment_status").$type<PaymentStatus>(),
     txHash: text("tx_hash").$type<Hash>(),
+    submittedAt: text("submitted_at"),
     paymentError: text("payment_error"),
   },
   (t) => [index("decisions_agent_created_idx").on(t.agentId, t.createdAt)],
@@ -93,6 +84,7 @@ export const transfers = sqliteTable(
     authorization: text("authorization").$type<TransferAuthorization>(),
     decisionId: text("decision_id").references(() => decisions.id),
     seenAt: text("seen_at").notNull(),
+    confirmedAt: text("confirmed_at"),
   },
   (t) => [index("transfers_tx_hash_idx").on(t.txHash), index("transfers_block_idx").on(t.blockNumber)],
 );

@@ -1,12 +1,12 @@
 import Fastify from "fastify";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, type SQL } from "drizzle-orm";
 import { parseUnits } from "viem";
-import type { AuthorizeRequest, Decision, Spend, Transfer } from "@agent-spend-tracer/shared";
+import type { Agent, AuthorizeRequest, Decision, Transfer, TransferAuthorization } from "@agent-spend-tracer/shared";
 import { USDC_DECIMALS } from "./config.js";
 import type { Db } from "./db/client.js";
-import { decisions, spends, transfers, type DecisionRow } from "./db/schema.js";
+import { agents, decisions, transfers, type DecisionRow } from "./db/schema.js";
 import { submitPayment, type PaymentSender } from "./payments.js";
-import { approve, authorize, PolicyError } from "./policy.js";
+import { approve, authorize, deny, PolicyError } from "./policy.js";
 
 interface AppOptions {
   sender: PaymentSender;
@@ -43,10 +43,7 @@ export function buildApp(db: Db, { sender, logger = true, now = () => new Date()
 
   app.get("/api/health", async () => ({ ok: true }));
 
-  app.get("/api/spends", async (): Promise<Spend[]> => {
-    const rows = await db.select().from(spends).orderBy(desc(spends.createdAt));
-    return rows as Spend[];
-  });
+  app.get("/api/agents", async (): Promise<Agent[]> => db.select().from(agents));
 
   app.post<{ Body: AuthorizeRequest }>(
     "/api/authorize",
@@ -69,14 +66,39 @@ export function buildApp(db: Db, { sender, logger = true, now = () => new Date()
     async (req): Promise<Decision> => payIfApproved(await approve(db, req.params.id, now())),
   );
 
-  app.get("/api/decisions", async (): Promise<Decision[]> => {
-    const rows = await db.select().from(decisions).orderBy(desc(decisions.createdAt)).limit(100);
+  app.post<{ Params: { id: string } }>(
+    "/api/decisions/:id/deny",
+    async (req): Promise<Decision> => toDecision(await deny(db, req.params.id, now())),
+  );
+
+  /** ?pendingReview=true returns every held review (not just the latest 100) for the review queue. */
+  app.get<{ Querystring: { pendingReview?: string } }>("/api/decisions", async (req): Promise<Decision[]> => {
+    const rows =
+      req.query.pendingReview === "true"
+        ? await db
+            .select()
+            .from(decisions)
+            .where(and(eq(decisions.verdict, "review"), isNull(decisions.approvedAt), isNull(decisions.deniedAt)))
+            .orderBy(decisions.createdAt)
+        : await db.select().from(decisions).orderBy(desc(decisions.createdAt)).limit(100);
     return rows.map(toDecision);
   });
 
-  app.get("/api/transfers", async (): Promise<Transfer[]> => {
-    return db.select().from(transfers).orderBy(desc(transfers.blockNumber), desc(transfers.logIndex)).limit(100);
-  });
+  /** Filter with ?decisionId= (a decision's trace) or ?authorization=unauthorized (alerts). */
+  app.get<{ Querystring: { decisionId?: string; authorization?: TransferAuthorization } }>(
+    "/api/transfers",
+    async (req): Promise<Transfer[]> => {
+      const filters: SQL[] = [];
+      if (req.query.decisionId) filters.push(eq(transfers.decisionId, req.query.decisionId));
+      if (req.query.authorization) filters.push(eq(transfers.authorization, req.query.authorization));
+      return db
+        .select()
+        .from(transfers)
+        .where(and(...filters))
+        .orderBy(desc(transfers.blockNumber), desc(transfers.logIndex))
+        .limit(100);
+    },
+  );
 
   app.get<{ Params: { id: string } }>("/api/decisions/:id", async (req): Promise<Decision> => {
     const [row] = await db.select().from(decisions).where(eq(decisions.id, req.params.id));
